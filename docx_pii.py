@@ -125,3 +125,80 @@ if __name__ == '__main__':
         print("Usage: python extract_docx_pii.py path/to/document.docx")
         sys.exit(1)
     main(sys.argv[1])
+
+
+
+import zipfile
+from lxml import etree
+
+NS = {'w': 'http://schemas.openxmlformats.org/wordprocessingml/2006/main'}
+
+def redact_docx(docx_path, output_path, redactions):
+    """
+    Redact text across single or multiple <w:t> nodes.
+
+    redactions: list of dicts, each with keys:
+      - xml_path: full path like "/word/document.xml/w:body/w:p[14]/w:r[1]/w:t[1]"
+      - offset: character offset where replacement starts (int)
+      - length: number of characters to replace (int)
+    """
+    with zipfile.ZipFile(docx_path, 'r') as zin:
+        xml_bytes = zin.read('word/document.xml')
+        xml = etree.fromstring(xml_bytes)
+
+        # Gather all text nodes in linear order for multi-node search
+        text_nodes = list(xml.findall('.//w:t', namespaces=NS))
+
+        for red in redactions:
+            xml_path = red['xml_path']
+            offset = red['offset']
+            length = red['length']
+
+            # Find the target element
+            local_path = xml_path.replace('/word/document.xml', '')
+            nodes = xml.xpath(local_path, namespaces=NS)
+            if not nodes:
+                continue
+            start_node = nodes[0]
+
+            # Step 1: find index of this node in overall sequence
+            try:
+                idx = text_nodes.index(start_node)
+            except ValueError:
+                continue
+
+            remaining = length
+            cur_offset = offset
+
+            # Step 2: redact from start node onwards
+            while remaining > 0 and idx < len(text_nodes):
+                el = text_nodes[idx]
+                text = el.text or ""
+
+                # if starting node, skip to offset; else start at 0
+                start_pos = cur_offset if idx == text_nodes.index(start_node) else 0
+                end_pos = min(len(text), start_pos + remaining)
+                if start_pos < len(text):
+                    span_len = end_pos - start_pos
+                    replacement = "█" * span_len
+                    new_text = text[:start_pos] + replacement + text[end_pos:]
+                    el.text = new_text
+                    remaining -= span_len
+                else:
+                    # nothing to redact in this node
+                    pass
+
+                # after first node, reset offset to 0 for next
+                cur_offset = 0
+                idx += 1
+
+        # Save back to DOCX
+        updated_xml = etree.tostring(xml, xml_declaration=True, encoding='UTF-8')
+        with zipfile.ZipFile(output_path, 'w') as zout:
+            for item in zin.infolist():
+                data = zin.read(item.filename)
+                if item.filename == 'word/document.xml':
+                    data = updated_xml
+                zout.writestr(item, data)
+
+    print(f"✅ Redacted file written to: {output_path}")
