@@ -202,3 +202,24 @@ def redact_docx(docx_path, output_path, redactions):
                 zout.writestr(item, data)
 
     print(f"✅ Redacted file written to: {output_path}")
+
+
+
+        for red in redactions:
+            path = red['xml_path']
+            offset = red['offset']
+            length = red['length']
+            # remove the '/word/document.xml' prefix for XPath
+            local_path = path.replace('/word/document.xml', '')
+            elements = xml.xpath(local_path, namespaces=NS)
+            if not elements:
+                continue
+            el = elements[0]
+            text = el.text or ''
+            if offset < 0 or offset >= len(text):
+                continue
+            # compute replacement range
+            start = offset
+            end = min(len(text), offset + length)
+            new_text = text[:start] + '█' * (end - start) + text[end:]
+            el.text = new_text
